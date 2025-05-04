@@ -1,0 +1,740 @@
+library(biomaRt)
+library(GO.db)
+library(AnnotationDbi)
+library(org.Dm.eg.db)  # For Drosophila (change if using a different organism)
+library(dplyr)
+library(ggplot2)
+library(clusterProfiler)
+library(enrichplot)
+
+# the DESEQ2 result is stored in  'res_df' 
+# Step 1: Get genes associated with mitochondrion (GO:0005739)
+mito_genes <- AnnotationDbi::select(org.Dm.eg.db, 
+                                    keys = "GO:0005739", 
+                                    columns = c("FLYBASE", "SYMBOL"), 
+                                    keytype = "GO")
+
+# Filter out duplicate entries and NA values
+mito_genes <- mito_genes %>% 
+  filter(!is.na(FLYBASE)) %>%
+  distinct(FLYBASE, .keep_all = TRUE)
+
+# Step 2: Get genes associated with mitochondrial respiratory chain (GO:0033108)
+respchain_genes <- AnnotationDbi::select(org.Dm.eg.db, 
+                                         keys = "GO:0033108", 
+                                         columns = c("FLYBASE", "SYMBOL"), 
+                                         keytype = "GO")
+
+# Filter out duplicate entries and NA values
+respchain_genes <- respchain_genes %>% 
+  filter(!is.na(FLYBASE)) %>%
+  distinct(FLYBASE, .keep_all = TRUE)
+
+# Step 3: Filter DESeq2 results for mitochondrial genes
+# First ensure the rownames of res_df are stored as a column for easier joining
+res_df$gene_id <- rownames(res_df)
+
+# Filter for mitochondrial genes
+mito_results <- res_df %>%
+  filter(gene_id %in% mito_genes$FLYBASE) %>%
+  left_join(mito_genes, by = c("gene_id" = "FLYBASE"))
+
+# Filter for respiratory chain genes
+respchain_results <- res_df %>%
+  filter(gene_id %in% respchain_genes$FLYBASE) %>%
+  left_join(respchain_genes, by = c("gene_id" = "FLYBASE"))
+
+# Step 4: Analyze and visualize the results
+
+# 1. Summary statistics for mitochondrial genes
+mito_summary <- data.frame(
+  Category = "Mitochondrion (GO:0005739)",
+  Total_Genes = nrow(mito_results),
+  Upregulated = sum(mito_results$log2FoldChange > 0 & mito_results$padj < 0.05, na.rm = TRUE),
+  Downregulated = sum(mito_results$log2FoldChange < 0 & mito_results$padj < 0.05, na.rm = TRUE),
+  Not_Significant = sum(mito_results$padj >= 0.05, na.rm = TRUE)
+)
+
+# 2. Summary statistics for respiratory chain genes
+resp_summary <- data.frame(
+  Category = "Respiratory Chain (GO:0033108)",
+  Total_Genes = nrow(respchain_results),
+  Upregulated = sum(respchain_results$log2FoldChange > 0 & respchain_results$padj < 0.05, na.rm = TRUE),
+  Downregulated = sum(respchain_results$log2FoldChange < 0 & respchain_results$padj < 0.05, na.rm = TRUE),
+  Not_Significant = sum(respchain_results$padj >= 0.05, na.rm = TRUE)
+)
+
+# Combine summaries
+summary_stats <- rbind(mito_summary, resp_summary)
+print(summary_stats)
+
+# 5. Volcano plot of mitochondrial genes
+ggplot(mito_results, aes(x = log2FoldChange, y = -log10(pvalue))) +
+  geom_point(aes(color = padj < 0.05), alpha = 0.6, size = 2) +
+  #geom_text(data = subset(mito_results, padj < 0.05), 
+            #aes(label = SYMBOL), vjust = 1.5, size = 3) +
+  scale_color_manual(values = c("grey", "red")) +
+  theme_minimal() +
+  labs(title = "Mitochondrial Genes (GO:0005739)",
+       x = "Log2 Fold Change",
+       y = "-Log10 P-value") +
+  theme(legend.position = "none")
+
+# Save the plot
+ggsave("mitochondrial_genes_volcano.pdf", width = 10, height = 8)
+
+# 6. Detailed examination of respiratory chain genes
+# Sort by significance
+respchain_details <- respchain_results %>%
+  arrange(padj) %>%
+  select(gene_id, SYMBOL, baseMean, log2FoldChange, pvalue, padj)
+
+# Print the details
+print(respchain_details)
+write.csv(respchain_details, "respiratory_chain_genes.csv", row.names = FALSE)
+
+# 7. Create a heatmap of the respiratory chain genes
+# Optional: if you have count data for the samples
+# Extract count data for respiratory chain genes
+# This assumes you still have access to the DESeq2 object 'dds'
+metadata_for_plot <- metadata
+rownames(metadata_for_plot) <- metadata_for_plot$sample_id
+
+# Load required libraries
+library(DESeq2)
+library(pheatmap)
+library(RColorBrewer)
+library(biomaRt)
+library(org.Dm.eg.db)
+library(AnnotationDbi)
+library(dplyr)
+library(tibble)
+
+# If your metadata is in a variable called 'metadata', we'll use it directly
+# Make sure the rownames match the column names of gene_count
+metadata_for_plot <- metadata
+rownames(metadata_for_plot) <- metadata_for_plot$sample_id
+rownames(gene_count)
+
+# Step 1: Get genes associated with mitochondrial respiratory chain (GO:0033108)
+respchain_genes <- AnnotationDbi::select(org.Dm.eg.db, 
+                                         keys = "GO:0033108", 
+                                         columns = c("FLYBASE", "SYMBOL"), 
+                                         keytype = "GO")
+
+# Filter out duplicate entries and NA values
+respchain_genes <- respchain_genes %>% 
+  filter(!is.na(FLYBASE)) %>%
+  distinct(FLYBASE, .keep_all = TRUE)
+
+# Add known respiratory chain genes that might not be captured by GO term
+known_resp_genes <- c(
+  "FBgn0013674", # COX1
+  "FBgn0013675", # COX2
+  "FBgn0013676", # COX3
+  "FBgn0013680", # ND1
+  "FBgn0013681", # ND2
+  "FBgn0013682", # ND3
+  "FBgn0013683", # ND4
+  "FBgn0013684", # ND4L
+  "FBgn0013685", # ND5
+  "FBgn0013687", # ND6
+  "FBgn0013695", # CYTB
+  "FBgn0020235", # ATP6
+  "FBgn0016120"  # ATP8
+)
+
+# Create a mapping between gene IDs and symbols for mitochondrial genes
+mito_symbols <- data.frame(
+  FLYBASE = c(
+    "FBgn0013674", "FBgn0013675", "FBgn0013676",
+    "FBgn0013680", "FBgn0013681", "FBgn0013682", 
+    "FBgn0013683", "FBgn0013684", "FBgn0013685", 
+    "FBgn0013687", "FBgn0013695", "FBgn0020235", 
+    "FBgn0016120"
+  ),
+  SYMBOL = c(
+    "COX1", "COX2", "COX3",
+    "ND1", "ND2", "ND3",
+    "ND4", "ND4L", "ND5",
+    "ND6", "CYTB", "ATP6",
+    "ATP8"
+  )
+)
+
+# Combine GO annotated genes with known genes
+all_resp_genes <- unique(c(respchain_genes$FLYBASE, known_resp_genes))
+
+# Step 2: Filter count matrix for respiratory chain genes
+resp_counts <- gene_count[rownames(gene_count) %in% all_resp_genes, ]
+
+# Check if we have any respiratory chain genes in our count matrix
+if(nrow(resp_counts) == 0) {
+  stop("No respiratory chain genes found in the count matrix.")
+}
+
+# Step 3: Get gene symbols for annotation
+gene_symbols <- AnnotationDbi::select(org.Dm.eg.db,
+                                      keys = rownames(resp_counts),
+                                      columns = c("SYMBOL"),
+                                      keytype = "FLYBASE")
+
+# Merge gene symbols with mitochondrial symbols
+gene_symbols <- rbind(gene_symbols, mito_symbols)
+gene_symbols <- gene_symbols[!duplicated(gene_symbols$FLYBASE), ]
+
+# Make sure all genes have symbols
+gene_symbols <- gene_symbols %>%
+  mutate(SYMBOL = ifelse(is.na(SYMBOL), FLYBASE, SYMBOL))
+
+# Create a named vector for row labels
+row_labels <- gene_symbols$SYMBOL
+names(row_labels) <- gene_symbols$FLYBASE
+
+# Step 4: Make sure all samples in gene_count are in metadata
+samples_in_count <- colnames(gene_count)
+samples_in_metadata <- rownames(metadata_for_plot)
+
+# Check for missing samples
+missing_samples <- setdiff(samples_in_count, samples_in_metadata)
+if(length(missing_samples) > 0) {
+  warning(paste("Some samples in count matrix are not in metadata:", 
+                paste(missing_samples, collapse=", ")))
+}
+
+# Filter gene_count to include only samples in metadata
+common_samples <- intersect(samples_in_count, samples_in_metadata)
+resp_counts_filtered <- resp_counts[, common_samples]
+
+# Filter metadata to include only samples in gene_count
+metadata_filtered <- metadata_for_plot[common_samples, ]
+
+# Step 5: Create DESeq2 object and normalize data
+# For a proper analysis, create a design based on your experimental factors
+# Here we'll use a design that includes group and time
+dds <- DESeqDataSetFromMatrix(
+  countData = resp_counts_filtered,
+  colData = metadata_filtered,
+  design = ~ group + time
+)
+
+# Run variance stabilizing transformation
+vst <- varianceStabilizingTransformation(dds)
+
+# Extract transformed values for respiratory chain genes
+vst_resp <- assay(vst)
+
+# Step 6: Assign genes to respiratory complexes for annotation
+complex_annotation <- data.frame(
+  row.names = rownames(vst_resp),
+  Complex = "Other"
+)
+
+# Assign complexes based on gene IDs/symbols
+for(i in 1:nrow(complex_annotation)) {
+  gene_id <- rownames(complex_annotation)[i]
+  symbol <- row_labels[gene_id]
+  
+  if(grepl("^COX", symbol)) {
+    complex_annotation$Complex[i] <- "Complex IV"
+  } else if(grepl("^ND", symbol)) {
+    complex_annotation$Complex[i] <- "Complex I"
+  } else if(grepl("^CYTB", symbol)) {
+    complex_annotation$Complex[i] <- "Complex III"
+  } else if(grepl("^ATP", symbol)) {
+    complex_annotation$Complex[i] <- "Complex V"
+  } else if(grepl("^SDH", symbol)) {
+    complex_annotation$Complex[i] <- "Complex II"
+  } else if(grepl("^UQCR", symbol)) {
+    complex_annotation$Complex[i] <- "Complex III"
+  } else if(grepl("^COQ", symbol)) {
+    complex_annotation$Complex[i] <- "Coenzyme Q"
+  }
+}
+
+# Step 7: Prepare annotations for the heatmap using metadata
+# Select relevant columns from metadata for annotation
+sample_ann <- metadata_filtered %>%
+  select(group, time, matched) %>%
+  as.data.frame()
+
+# Convert time to factor for better visualization
+sample_ann$time <- factor(sample_ann$time)
+
+# Step 8: Set up colors for annotations
+# Colors for groups (FF, AA, FA)
+group_colors <- c(
+  "FF" = "#E41A1C", # red
+  "AA" = "#377EB8", # blue
+  "FA" = "#4DAF50"  # green
+)
+
+# Colors for time points
+time_colors <- colorRampPalette(brewer.pal(9, "YlOrRd"))(length(unique(sample_ann$time)))
+names(time_colors) <- levels(sample_ann$time)
+
+# Colors for matched/unmatched
+matched_colors <- c(
+  "TRUE" = "#66C2A5",  # teal
+  "FALSE" = "#FC8D62"  # orange
+)
+
+# Colors for complexes
+complex_colors <- c(
+  "Complex I" = "#FFC107",    # amber
+  "Complex II" = "#9C27B0",   # purple
+  "Complex III" = "#2196F3",  # blue
+  "Complex IV" = "#F44336",   # red
+  "Complex V" = "#4CAF50",    # green
+  "Coenzyme Q" = "#FF9800",   # orange
+  "Other" = "#9E9E9E"         # gray
+)
+
+# Combine all color annotations
+ann_colors <- list(
+  group = group_colors,
+  time = time_colors,
+  matched = matched_colors,
+  Complex = complex_colors
+)
+
+# Step 9: Create the heatmap
+# Replace row names with gene symbols for the plot
+rownames_for_plot <- row_labels[rownames(vst_resp)]
+
+# Set colors for the heatmap
+heatmap_colors <- colorRampPalette(rev(brewer.pal(11, "RdBu")))(100)
+
+# Create the heatmap
+pheatmap(
+  vst_matrix,
+  color = heatmap_colors,
+  cluster_rows = FALSE,  # No clustering
+  cluster_cols = FALSE,  # No clustering
+  show_rownames = TRUE,
+  show_colnames = FALSE,
+  annotation_col = sample_ann,
+  annotation_row = complex_annotation,
+  annotation_colors = ann_colors,
+  labels_row = rownames_for_plot,
+  main = "Expression of Mitochondrial Respiratory Chain Genes (No Clustering)",
+  fontsize_row = 8,
+  fontsize_col = 8,
+  scale = "row",
+  border_color = NA,
+  filename = "respiratory_chain_heatmap_noclust.pdf",
+  width = 12,
+  height = 8
+)
+
+
+# Step 10: Additional analyses by matched/unmatched status
+# This is particularly important based on your metadata
+
+# Split the data by matched status
+matched_samples <- rownames(sample_ann)[sample_ann$matched == TRUE]
+unmatched_samples <- rownames(sample_ann)[sample_ann$matched == FALSE]
+
+# Calculate mean expression for each gene by matched status
+matched_expr <- rowMeans(vst_resp[, matched_samples, drop = FALSE])
+unmatched_expr <- rowMeans(vst_resp[, unmatched_samples, drop = FALSE])
+
+# Calculate log2 fold change (unmatched vs matched)
+log2fc <- unmatched_expr - matched_expr
+
+# Create a data frame with the results
+matched_results <- data.frame(
+  Gene = rownames(vst_resp),
+  Symbol = rownames_for_plot,
+  Complex = complex_annotation$Complex,
+  Matched_Mean = matched_expr,
+  Unmatched_Mean = unmatched_expr,
+  Log2FC = log2fc
+)
+
+# Sort by complex and then by log2FC
+matched_results <- matched_results %>%
+  arrange(Complex, Log2FC)
+
+# Save this data to a CSV file
+write.csv(matched_results, "respiratory_chain_matched_vs_unmatched.csv", row.names = FALSE)
+
+# Create a visualization of the matched vs unmatched comparison
+if(require(ggplot2)) {
+  # Create a plot showing log2FC by complex
+  ggplot(matched_results, aes(x = Complex, y = Log2FC, fill = Complex)) +
+    geom_boxplot(alpha = 0.7) +
+    geom_jitter(width = 0.2, height = 0, size = 3, alpha = 0.7) +
+    geom_text(aes(label = Symbol), vjust = -1, size = 2.5) +
+    scale_fill_manual(values = complex_colors) +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+    labs(title = "Expression Changes in Respiratory Chain Complexes",
+         subtitle = "Unmatched vs Matched",
+         y = "Log2 Fold Change") +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "grey50")
+  
+  
+  
+  # Create a heatmap
+  library(pheatmap)
+  pheatmap(resp_counts_z,
+           main = "Expression of Respiratory Chain Genes",
+           cluster_rows = TRUE,
+           cluster_cols = TRUE,
+           show_rownames = TRUE,
+           annotation_row = data.frame(
+             log2FC = respchain_results$log2FoldChange,
+             row.names = respchain_results$gene_id
+           ),
+           filename = "respiratory_chain_heatmap.pdf")
+}
+
+# 8. GO enrichment analysis for significantly altered mitochondrial genes
+# Find significantly altered mitochondrial genes
+sig_mito_genes <- mito_results %>%
+  filter(padj < 0.05) %>%
+  pull(gene_id)
+
+# Create a gene list with all genes and their significance
+gene_list <- res_df$padj
+names(gene_list) <- res_df$gene_id
+gene_list <- gene_list[!is.na(gene_list)]
+
+# Perform GO enrichment analysis if there are significant mitochondrial genes
+if(length(sig_mito_genes) > 5) {
+  ego <- enrichGO(gene = sig_mito_genes,
+                  universe = names(gene_list),
+                  OrgDb = org.Dm.eg.db,
+                  keyType = "FLYBASE",
+                  ont = "BP",  # Biological Process
+                  pAdjustMethod = "BH",
+                  pvalueCutoff = 0.05,
+                  qvalueCutoff = 0.2)
+  
+  # Visualize the results
+  dotplot(ego, showCategory = 15)
+  ggsave("mito_GO_enrichment.pdf", width = 12, height = 10)
+}
+
+# 9. Test for overrepresentation of up/downregulation in mitochondrial genes
+# Prepare a contingency table
+# For all genes in dataset
+all_genes_table <- table(
+  Regulation = ifelse(res_df$log2FoldChange > 0 & res_df$padj < 0.05, "Up",
+                      ifelse(res_df$log2FoldChange < 0 & res_df$padj < 0.05, "Down", "Not Sig")),
+  Category = "All Genes"
+)
+
+# For mitochondrial genes
+mito_genes_table <- table(
+  Regulation = ifelse(mito_results$log2FoldChange > 0 & mito_results$padj < 0.05, "Up",
+                      ifelse(mito_results$log2FoldChange < 0 & mito_results$padj < 0.05, "Down", "Not Sig")),
+  Category = "Mito Genes"
+)
+
+# For respiratory chain genes
+resp_genes_table <- table(
+  Regulation = ifelse(respchain_results$log2FoldChange > 0 & respchain_results$padj < 0.05, "Up",
+                      ifelse(respchain_results$log2FoldChange < 0 & respchain_results$padj < 0.05, "Down", "Not Sig")),
+  Category = "Resp Chain"
+)
+
+# Combine tables
+regulation_table <- cbind(all_genes_table, mito_genes_table, resp_genes_table)
+print(regulation_table)
+
+# Test for enrichment using Fisher's exact test
+# For mitochondrial genes
+mito_fisher <- fisher.test(matrix(c(
+  sum(mito_results$log2FoldChange < 0 & mito_results$padj < 0.05, na.rm = TRUE),
+  sum(res_df$log2FoldChange < 0 & res_df$padj < 0.05, na.rm = TRUE) - 
+    sum(mito_results$log2FoldChange < 0 & mito_results$padj < 0.05, na.rm = TRUE),
+  nrow(mito_results) - sum(mito_results$log2FoldChange < 0 & mito_results$padj < 0.05, na.rm = TRUE),
+  nrow(res_df) - nrow(mito_results) - 
+    (sum(res_df$log2FoldChange < 0 & res_df$padj < 0.05, na.rm = TRUE) - 
+       sum(mito_results$log2FoldChange < 0 & mito_results$padj < 0.05, na.rm = TRUE))
+), nrow = 2))
+
+# For respiratory chain genes
+resp_fisher <- fisher.test(matrix(c(
+  sum(respchain_results$log2FoldChange < 0 & respchain_results$padj < 0.05, na.rm = TRUE),
+  sum(res_df$log2FoldChange < 0 & res_df$padj < 0.05, na.rm = TRUE) - 
+    sum(respchain_results$log2FoldChange < 0 & respchain_results$padj < 0.05, na.rm = TRUE),
+  nrow(respchain_results) - sum(respchain_results$log2FoldChange < 0 & respchain_results$padj < 0.05, na.rm = TRUE),
+  nrow(res_df) - nrow(respchain_results) - 
+    (sum(res_df$log2FoldChange < 0 & res_df$padj < 0.05, na.rm = TRUE) - 
+       sum(respchain_results$log2FoldChange < 0 & respchain_results$padj < 0.05, na.rm = TRUE))
+), nrow = 2))
+
+cat("Fisher's exact test for enrichment of downregulated genes in mitochondrial genes:\n")
+print(mito_fisher)
+
+cat("Fisher's exact test for enrichment of downregulated genes in respiratory chain genes:\n")
+print(resp_fisher)
+
+# 10. Visualization of log2FoldChange distribution
+# Create a combined data frame for visualization
+viz_data <- bind_rows(
+  data.frame(res_df, Category = "All Genes"),
+  data.frame(mito_results, Category = "Mitochondrial Genes"),
+  data.frame(respchain_results, Category = "Respiratory Chain Genes")
+)
+
+# Create boxplots of log2FoldChange for each category
+ggplot(viz_data, aes(x = Category, y = log2FoldChange, fill = Category)) +
+  geom_boxplot(alpha = 0.7) +
+  theme_minimal() +
+  labs(title = "Distribution of log2FoldChange",
+       x = "",
+       y = "log2FoldChange") +
+  theme(legend.position = "none") +
+  coord_flip()
+
+# Save the plot
+ggsave("log2FC_distribution.pdf", width = 10, height = 6)
+
+# 11. Separate visualization for respiratory chain complexes
+# This requires manual annotation of which genes belong to which complex
+# Example code assuming you have this annotation:
+
+# Create a complex annotation for some key respiratory chain genes
+complex_annotation <- data.frame(
+  gene_id = c("FBgn0013674", "FBgn0013675", "FBgn0013676",  # Example IDs for COX1, COX2, COX3
+              "FBgn0013680", "FBgn0013681", "FBgn0013682",  # Example IDs for ND1, ND2, ND3
+              "FBgn0013695",  # Example ID for CYTB
+              "FBgn0020235", "FBgn0016120"),  # Example IDs for ATP6, ATP8
+  Complex = c(rep("Complex IV", 3),
+              rep("Complex I", 3),
+              "Complex III",
+              rep("Complex V", 2))
+)
+
+# Join this annotation with your results
+if(nrow(respchain_results) > 0) {
+  respchain_complex <- respchain_results %>%
+    left_join(complex_annotation, by = "gene_id")
+  
+  # Visualize by complex
+  ggplot(respchain_complex, aes(x = Complex, y = log2FoldChange, color = padj < 0.05)) +
+    geom_boxplot(alpha = 0.5) +
+    geom_jitter(width = 0.2, height = 0, size = 3, alpha = 0.7) +
+    geom_text_repel(data = filter(respchain_complex, padj < 0.05),
+                    aes(label = SYMBOL), size = 3) +
+    scale_color_manual(values = c("grey", "red")) +
+    theme_minimal() +
+    labs(title = "log2FoldChange by Respiratory Chain Complex",
+         x = "",
+         y = "log2FoldChange") +
+    theme(legend.position = "none")
+  
+  # Save the plot
+  ggsave("respiratory_complex_log2FC.pdf", width = 10, height = 6)
+}
+
+
+
+
+
+
+# Load required libraries
+library(ggplot2)
+library(dplyr)
+library(ggrepel)  # For better label placement
+library(org.Dm.eg.db)
+library(AnnotationDbi)
+library(GO.db)
+
+# Load required libraries
+library(ggplot2)
+library(dplyr)
+library(ggrepel)  # For better label placement
+library(org.Dm.eg.db)
+library(AnnotationDbi)
+library(GO.db)
+
+# Get genes associated with mitochondrial respiratory chain (GO:0033108)
+respchain_genes <- AnnotationDbi::select(org.Dm.eg.db, 
+                                         keys = "GO:0033108", 
+                                         columns = c("FLYBASE", "SYMBOL"), 
+                                         keytype = "GO")
+
+# Filter out duplicate entries and NA values
+respchain_genes <- respchain_genes %>% 
+  filter(!is.na(FLYBASE)) %>%
+  distinct(FLYBASE, .keep_all = TRUE)
+
+# Print the column names of respchain_genes to understand its structure
+print("Columns in respchain_genes:")
+print(colnames(respchain_genes))
+
+# Get GO term description for the title
+go_term_description <- AnnotationDbi::select(GO.db, 
+                                             keys = "GO:0033108", 
+                                             columns = "TERM", 
+                                             keytype = "GOID")$TERM
+
+# Manual mapping for gene symbols of mitochondrial genes
+mito_symbols <- data.frame(
+  FLYBASE = c(
+    "FBgn0013674", "FBgn0013675", "FBgn0013676",
+    "FBgn0013680", "FBgn0013681", "FBgn0013682", 
+    "FBgn0013683", "FBgn0013684", "FBgn0013685", 
+    "FBgn0013687", "FBgn0013695", "FBgn0020235", 
+    "FBgn0016120"
+  ),
+  SYMBOL = c(
+    "COX1", "COX2", "COX3",
+    "ND1", "ND2", "ND3",
+    "ND4", "ND4L", "ND5",
+    "ND6", "CYTB", "ATP6",
+    "ATP8"
+  )
+)
+
+# FIXED: Create a list of all respiratory gene IDs without trying to rbind
+all_resp_gene_ids <- unique(c(respchain_genes$FLYBASE, mito_symbols$FLYBASE))
+
+# Use your existing DESeq2 results (res_df)
+# Ensure res_df has a gene_name column or create one
+if (!"gene_name" %in% colnames(res_df)) {
+  # Create a mapping from FlyBase IDs to gene symbols for all genes
+  symbol_mapping <- data.frame(
+    FLYBASE = c(respchain_genes$FLYBASE, mito_symbols$FLYBASE),
+    SYMBOL = c(respchain_genes$SYMBOL, mito_symbols$SYMBOL)
+  )
+  symbol_mapping <- symbol_mapping[!duplicated(symbol_mapping$FLYBASE), ]
+  
+  # Initialize gene_name column
+  res_df$gene_name <- NA
+  
+  # Fill in known symbols first
+  for (i in 1:nrow(symbol_mapping)) {
+    idx <- which(rownames(res_df) == symbol_mapping$FLYBASE[i])
+    if (length(idx) > 0) {
+      res_df$gene_name[idx] <- symbol_mapping$SYMBOL[i]
+    }
+  }
+  
+  # Fill in missing names with org.Dm.eg.db
+  missing_names <- is.na(res_df$gene_name)
+  if (any(missing_names)) {
+    gene_symbols <- tryCatch({
+      AnnotationDbi::select(org.Dm.eg.db, 
+                            keys = rownames(res_df)[missing_names], 
+                            columns = "SYMBOL", 
+                            keytype = "FLYBASE")
+    }, error = function(e) {
+      print("Error getting gene symbols:")
+      print(e)
+      return(data.frame(FLYBASE = character(0), SYMBOL = character(0)))
+    })
+    
+    # Map gene symbols to res_df
+    for (i in 1:nrow(gene_symbols)) {
+      idx <- which(rownames(res_df) == gene_symbols$FLYBASE[i])
+      if (length(idx) > 0) {
+        res_df$gene_name[idx] <- gene_symbols$SYMBOL[i]
+      }
+    }
+  }
+  
+  # For any remaining NAs, use the FBgn ID as the name
+  still_missing <- is.na(res_df$gene_name)
+  if (any(still_missing)) {
+    res_df$gene_name[still_missing] <- rownames(res_df)[still_missing]
+  }
+}
+
+# Add a column to indicate if a gene is a respiratory chain gene
+res_df$is_resp_gene <- rownames(res_df) %in% all_resp_gene_ids
+
+# Count how many respiratory genes were found
+resp_gene_count <- sum(res_df$is_resp_gene, na.rm = TRUE)
+print(paste("Found", resp_gene_count, "respiratory chain genes in the dataset"))
+
+# Define genes that meet significance threshold
+res_df$is_significant <- res_df$padj < 0.05 & !is.na(res_df$padj)
+
+# Define genes that have strong fold changes
+res_df$is_strong_fc <- abs(res_df$log2FoldChange) > 1 & !is.na(res_df$log2FoldChange)
+
+# Create a category column for coloring
+res_df <- res_df %>%
+  mutate(gene_category = case_when(
+    is_resp_gene & is_significant ~ "Significant Respiratory Gene",
+    is_resp_gene & !is_significant ~ "Non-significant Respiratory Gene",
+    !is_resp_gene & is_significant ~ "Other Significant Gene",
+    TRUE ~ "Non-significant Gene"
+  ))
+
+# Filter out NAs in p-values or log2FC
+res_df_filtered <- res_df %>%
+  filter(!is.na(pvalue), !is.na(log2FoldChange))
+
+# Add a column for label display - only label significant resp genes and those with large fold changes
+res_df_filtered$show_label <- res_df_filtered$is_resp_gene & 
+  (res_df_filtered$is_significant | abs(res_df_filtered$log2FoldChange) > 1)
+
+# Create the volcano plot
+p <- ggplot(res_df_filtered, aes(x = log2FoldChange, y = -log10(pvalue))) +
+  # Add points
+  geom_point(aes(color = gene_category), alpha = 0.6, size = 1) +
+  
+  # Add reference lines
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "darkgray") +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "darkgray") +
+  
+  # Add labels for the reference lines
+  annotate("text", x = -1.2, y = 0.5, label = "log2FC = -1", size = 3, color = "darkgray") +
+  annotate("text", x = 1.2, y = 0.5, label = "log2FC = 1", size = 3, color = "darkgray") +
+  annotate("text", x = min(res_df_filtered$log2FoldChange, na.rm = TRUE) + 1, 
+           y = -log10(0.05) + 0.2, label = "p = 0.05", size = 3, color = "darkgray") +
+  
+  # Add labels for respiratory genes (only those we want to highlight)
+  geom_text_repel(
+    data = subset(res_df_filtered, show_label),
+    aes(label = gene_name),
+    size = 3,
+    box.padding = 0.5,
+    max.overlaps = 30
+  ) +
+  
+  # Set colors
+  scale_color_manual(values = c(
+    "Significant Respiratory Gene" = "red",
+    "Non-significant Respiratory Gene" = "orange",
+    "Other Significant Gene" = "blue",
+    "Non-significant Gene" = "gray"
+  )) +
+  
+  # Labels and theme
+  labs(
+    title = "Volcano Plot of Gene Expression",
+    subtitle = paste("Highlighting", go_term_description, "(GO:0033108)"),
+    x = "Log2 Fold Change",
+    y = "-Log10 P-value",
+    color = "Gene Category"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    panel.grid.minor = element_blank(),
+    panel.border = element_rect(color = "black", fill = NA, size = 0.5)
+  )
+
+# Save the plot
+ggsave("respiratory_go0033108_volcano.pdf", plot = p, width = 10, height = 8)
+ggsave("respiratory_go0033108_volcano.png", plot = p, width = 10, height = 8, dpi = 300)
+
+# Print a summary of respiratory genes
+resp_summary <- res_df_filtered %>%
+  filter(is_resp_gene) %>%
+  arrange(padj) %>%
+  select(gene_name, log2FoldChange, pvalue, padj, is_significant)
+
+print("Top respiratory chain genes by significance:")
+print(head(resp_summary, 10))
+
+# Save the respiratory gene data to a CSV
+write.csv(resp_summary, "respiratory_chain_genes_results.csv", row.names = TRUE)
