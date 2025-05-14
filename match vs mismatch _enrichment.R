@@ -1,16 +1,8 @@
-# Simplified script focused only on creating network plots with visible gene names
 
-# Load required libraries
 library(clusterProfiler)
-library(org.Dm.eg.db)  # Drosophila annotation package
+library(org.Dm.eg.db)  
 library(enrichplot)
 library(ggplot2)
-
-# Create a direct approach to show gene names in network plots
-# This simpler approach should work more reliably
-
-# First, run the GO and KEGG analyses (assuming you have your differentially expressed genes)
-# You'll need to adapt these parts to match your actual data variables
 
 # Get significant genes
 sig_gene_ids <- rownames(sig_genes_matched)
