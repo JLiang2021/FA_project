@@ -1,13 +1,11 @@
 library(biomaRt)
 library(GO.db)
 library(AnnotationDbi)
-library(org.Dm.eg.db)  # For Drosophila (change if using a different organism)
+library(org.Dm.eg.db) 
 library(dplyr)
 library(ggplot2)
 library(clusterProfiler)
 library(enrichplot)
-
-# the DESEQ2 result is stored in  'res_df' 
 # Step 1: Get genes associated with mitochondrion (GO:0005739)
 mito_genes <- AnnotationDbi::select(org.Dm.eg.db, 
                                     keys = "GO:0005739", 
