@@ -1,19 +1,10 @@
-# Focused analysis on polG1 (DNA polymerase gamma) in matched vs mismatched comparison
-
-# First, let's find polG1 in our results
-# The FlyBase ID for polG1 is FBgn0004406 and the gene symbol is tam (tamas)
-
-# Load required libraries
 library(ggplot2)
 library(org.Dm.eg.db)
 library(dplyr)
 
 # Function to find a gene by name or partial name in results
 find_gene <- function(gene_pattern, results_obj, full_results = TRUE) {
-  # Convert pattern to lowercase for case-insensitive search
   pattern <- tolower(gene_pattern)
-  
-  # Look for matches in gene names if we've added them to our results
   if ("gene_name" %in% colnames(results_obj)) {
     matches <- grep(pattern, tolower(results_obj$gene_name), value = FALSE)
     if (length(matches) > 0) {
@@ -25,7 +16,7 @@ find_gene <- function(gene_pattern, results_obj, full_results = TRUE) {
     }
   }
   
-  # Look for matches in rownames (FlyBase IDs)
+
   matches <- grep(pattern, tolower(rownames(results_obj)), value = FALSE)
   if (length(matches) > 0) {
     if (full_results) {
@@ -35,7 +26,6 @@ find_gene <- function(gene_pattern, results_obj, full_results = TRUE) {
     }
   }
   
-  # If we have an exact match (not just pattern)
   if (gene_pattern %in% rownames(results_obj)) {
     if (full_results) {
       return(results_obj[gene_pattern, , drop = FALSE])
@@ -44,7 +34,6 @@ find_gene <- function(gene_pattern, results_obj, full_results = TRUE) {
     }
   }
   
-  # Use org.Dm.eg.db to look up FlyBase ID from gene symbol
   if (requireNamespace("org.Dm.eg.db", quietly = TRUE)) {
     tryCatch({
       fb_id <- AnnotationDbi::select(org.Dm.eg.db, 
@@ -63,17 +52,12 @@ find_gene <- function(gene_pattern, results_obj, full_results = TRUE) {
         }
       }
     }, error = function(e) {
-      # Silently continue if error in lookup
     })
   }
-  
-  # If nothing found
   cat("Gene", gene_pattern, "not found in results.\n")
   return(NULL)
 }
 
-# Find polG1 (tam/tamas) in the DESeq2 results
-cat("Looking for polG1 (tamas/tam) in differential expression results...\n")
 
 # Try different possible names/IDs for polG1
 polg_results <- find_gene("polG", res_matched)
@@ -339,42 +323,11 @@ get_correct_fold_changes <- function() {
     
     return(fc_data)
   }, silent = TRUE)
-  
-  # Alternative approach if the above fails
-  cat("Trying alternative approach to calculate fold changes...\n")
-  
-  # Get normalized counts
-  norm_counts <- counts(dds, normalized = TRUE)
-  
-  # Get sample groups
-  sample_groups <- as.character(colData(dds)$group)
-  
-  # Calculate mean expression for each group
-  mean_FF <- rowMeans(norm_counts[, sample_groups == "FF", drop = FALSE])
-  mean_FA <- rowMeans(norm_counts[, sample_groups == "FA", drop = FALSE])
-  mean_AA <- rowMeans(norm_counts[, sample_groups == "AA", drop = FALSE])
-  
-  # Calculate log2 fold changes
-  fc_data <- data.frame(
-    gene_id = rownames(norm_counts),
-    FC_FF_AA = log2(mean_FF / mean_AA),
-    FC_FA_AA = log2(mean_FA / mean_AA),
-    stringsAsFactors = FALSE
-  )
-  
-  # Remove rows with infinite values (zero counts)
-  fc_data <- fc_data[is.finite(fc_data$FC_FF_AA) & is.finite(fc_data$FC_FA_AA), ]
-  
-  return(fc_data)
 }
 
 # Get fold changes
 fc_data <- get_correct_fold_changes()
 
-if (!is.null(fc_data)) {
-  cat("Successfully calculated fold changes for", nrow(fc_data), "genes.\n")
-  
-  # Map gene IDs to symbols
   gene_symbols <- map_ids_to_symbols(fc_data$gene_id)
   fc_data$gene_symbol <- gene_symbols
   
@@ -804,55 +757,6 @@ create_time_plots <- function(plot_data) {
   
   print(p2)
   
-  # 3. Create a heatmap of expression changes over time
-  # Calculate mean expression for each gene, group, matched status, and time
-  heatmap_data <- plot_data %>%
-    group_by(gene_symbol, group, matched, time) %>%
-    summarize(mean_count = mean(count)) %>%
-    ungroup()
-  
-  # Pivot to wide format for the heatmap
-  heatmap_wide <- heatmap_data %>%
-    mutate(condition = paste(group, matched, time, sep = "_")) %>%
-    select(gene_symbol, condition, mean_count) %>%
-    pivot_wider(names_from = condition, values_from = mean_count)
-  
-  # Convert to matrix for heatmap
-  rownames(heatmap_wide) <- heatmap_wide$gene_symbol
-  heatmap_matrix <- as.matrix(heatmap_wide[, -1])
-  
-  # Create a color palette
-  heatmap_colors <- colorRampPalette(c("blue", "white", "red"))(100)
-  
-  # Get annotation data for columns
-  condition_parts <- strsplit(colnames(heatmap_matrix), "_")
-  col_annotations <- data.frame(
-    Group = sapply(condition_parts, function(x) x[1]),
-    Matched = sapply(condition_parts, function(x) x[2]),
-    Time = sapply(condition_parts, function(x) x[3])
-  )
-  rownames(col_annotations) <- colnames(heatmap_matrix)
-  
-  # Create annotation colors
-  annot_colors <- list(
-    Group = c(FF = "blue", FA = "purple", AA = "red"),
-    Matched = c(matched = "green", unmatched = "orange"),
-    Time = c("1" = "yellow", "2" = "lightblue", "3" = "pink")
-  )
-  
-  # Create heatmap
-  pheatmap(heatmap_matrix,
-           color = heatmap_colors,
-           scale = "row",  # Scale by row to see relative changes
-           annotation_col = col_annotations,
-           annotation_colors = annot_colors,
-           main = "Mitochondrial Biosynthesis Gene Expression Heatmap",
-           fontsize_row = 8,
-           fontsize_col = 8,
-           clustering_method = "ward.D2")
-  
-  return(list(p1 = p1, p2 = p2))
-}
 
 # Function to compare expression fold changes between groups
 analyze_fold_changes <- function(mito_genes) {
