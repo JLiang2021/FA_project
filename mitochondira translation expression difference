@@ -1,8 +1,6 @@
-
-
 # Define more specific gene lists for mitochondrial and cytoplasmic translation machinery
 mito_ribosomal_genes <- c(
-  grep("^mRpL", res_matched$gene_symbol, value = TRUE)
+  grep("^mRpL", res_matched$gene_symbol, value = TRUE),
   grep("^mRpS", res_matched$gene_symbol, value = TRUE)
 )
 
@@ -102,34 +100,3 @@ print_top_genes <- function(gene_set, name, n=5) {
 print_top_genes(mito_ribo_summary, "mitochondrial ribosomal")
 print_top_genes(cyto_ribo_summary, "cytoplasmic ribosomal")
 print_top_genes(trans_reg_summary, "translation regulator")
-
-# Calculate overall enrichment for mitochondrial vs cytoplasmic biogenesis
-# This tests whether one compartment is more affected than the other
-if (mito_ribo_summary$summary$Total_Genes > 0 && cyto_ribo_summary$summary$Total_Genes > 0) {
-  # Create contingency table
-  contingency <- matrix(c(
-    mito_ribo_summary$summary$Significant_Total,
-    mito_ribo_summary$summary$Total_Genes - mito_ribo_summary$summary$Significant_Total,
-    cyto_ribo_summary$summary$Significant_Total,
-    cyto_ribo_summary$summary$Total_Genes - cyto_ribo_summary$summary$Significant_Total
-  ), nrow = 2)
-  
-  # Perform Fisher's exact test
-  fisher_result <- fisher.test(contingency)
-  
-  cat("\n=== Statistical comparison of mitochondrial vs cytoplasmic biogenesis ===\n")
-  cat("Fisher's exact test for differential regulation:\n")
-  cat("p-value:", fisher_result$p.value, "\n")
-  cat("Odds ratio:", fisher_result$estimate, "\n")
-  
-  # Interpret result
-  if (fisher_result$p.value < 0.05) {
-    if (fisher_result$estimate > 1) {
-      cat("Interpretation: Mitochondrial biogenesis genes are significantly more affected than cytoplasmic ones.\n")
-    } else {
-      cat("Interpretation: Cytoplasmic biogenesis genes are significantly more affected than mitochondrial ones.\n")
-    }
-  } else {
-    cat("Interpretation: No significant difference in regulation between mitochondrial and cytoplasmic biogenesis genes.\n")
-  }
-}
