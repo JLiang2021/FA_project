@@ -48,7 +48,7 @@ dds <- DESeqDataSetFromMatrix(
 )
 
 # Filter low count genes
-keep <- rowSums(counts(dds) >= 10) >= min(3, ncol(dds))
+keep <- rowMeans(counts(dds)) >= 2
 dds <- dds[keep,]
 dds$time <- as.numeric(dds$time)
 dds$group <- factor(dds$group)
@@ -740,3 +740,18 @@ compare_go_terms <- function(go_result1, go_result2, title1, title2) {
       arrange(ID, condition)
     
     print(shared_data)
+
+
+##impulsede2
+caseIdx <- metadata_filtered$matched == FALSE  # FA samples (mismatched)
+controlIdx <- metadata_filtered$matched == TRUE  # FF and AA samples (matched)
+impulseResults <- runImpulseDE2(
+  matCountData = gene_count_matrix,
+  dfAnnotation = data.frame(
+    Sample = colnames(gene_count_matrix),
+    Condition = ifelse(caseIdx, "case", "control"),
+    Time = metadata_filtered$time
+  ),
+  boolCaseCtrl = TRUE,
+  scaQThres = 0.05
+)
