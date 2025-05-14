@@ -1,6 +1,3 @@
-# Analysis comparing timepoint 5 vs timepoint 3 in FA group
-# Including differential expression, enrichment analysis, and visualization
-
 # Load required libraries
 library(DESeq2)
 library(tidyverse)
@@ -13,9 +10,6 @@ library(AnnotationDbi)
 library(RColorBrewer)
 library(ggrepel)
 
-#
-# Part 1: Filter data and perform differential expression analysis
-#
 
 # Filter metadata to include only FA group, timepoints 3 and 5
 timepoint_comparison <- function() {
