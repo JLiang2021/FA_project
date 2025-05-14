@@ -1,38 +1,3 @@
-# Add a function to map FlyBase IDs to gene names
-# If you have a mapping file, you can load it here
-# For demonstration, we'll create a function that could use packages like biomaRt or org.Dm.eg.db
-
-map_flybase_to_gene_names <- function(flybase_ids) {
-  
-library(AnnotationDbi)
-library(org.Dm.eg.db)
-gene_names <- mapIds(org.Dm.eg.db, 
-                      keys = flybase_ids,
-                      column = "SYMBOL", 
-                      keytype = "FLYBASE",
-                      multiVals = "first")
-  
-  # For demonstration purposes, we'll just create dummy gene names
-  # In your actual code, replace this with one of the methods above
-  gene_names <- vapply(flybase_ids, function(id) {
-    # Extract just the numeric part from FBgn identifiers and add "gene_" prefix
-    if (grepl("^FBgn", id)) {
-      num_part <- sub("^FBgn0*", "", id)
-      return(paste0("gene_", num_part))
-    } else {
-      return(id) # Return original ID if it doesn't match FBgn pattern
-    }
-  }, character(1))
-  
-  return(gene_names)
-}
-
-# Create a mapping from FlyBase IDs to gene names for all genes in the results
-all_gene_ids <- rownames(res_matched)
-gene_name_mapping <- map_flybase_to_gene_names(all_gene_ids)
-names(gene_name_mapping) <- all_gene_ids
-
-# Add gene names to results tables
 res_matched$gene_name <- gene_name_mapping[rownames(res_matched)]
 res_time$gene_name <- gene_name_mapping[rownames(res_time)]# Load required libraries
 library(DESeq2)
