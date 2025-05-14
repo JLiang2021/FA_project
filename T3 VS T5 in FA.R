@@ -10,54 +10,6 @@ library(AnnotationDbi)
 library(RColorBrewer)
 library(ggrepel)
 
-
-# Filter metadata to include only FA group, timepoints 3 and 5
-timepoint_comparison <- function() {
-  # Check if we have the necessary data
-  if (!exists("metadata") || !exists("gene_count")) {
-    cat("Required data (metadata, gene_count) not found.\n")
-    return(NULL)
-  }
-  
-  # Filter metadata
-  metadata_filtered <- metadata %>%
-    filter(group == "FA" & time %in% c(3, 5))
-  
-  # Check if we have enough samples
-  if (nrow(metadata_filtered) < 2) {
-    cat("Not enough FA samples at timepoints 3 and 5.\n")
-    return(NULL)
-  }
-  
-  cat("Filtered data includes", nrow(metadata_filtered), "samples.\n")
-  
-  # Get the sample IDs for the filtered metadata
-  samples_to_keep <- metadata_filtered$sample_id
-  
-  # Filter gene count matrix to keep only the samples in the filtered metadata
-  gene_count_filtered <- gene_count %>%
-    select(gene_id, all_of(samples_to_keep))
-  
-  # Make sure gene_id is a character vector (not a factor) before using as rownames
-  gene_count_filtered$gene_id <- as.character(gene_count_filtered$gene_id)
-  
-  # Check for duplicate gene_ids and handle them if present
-  if (any(duplicated(gene_count_filtered$gene_id))) {
-    cat("Warning: Duplicate gene_ids found. Adding suffix to make them unique.\n")
-    # Create a frequency table of gene_ids
-    gene_freq <- table(gene_count_filtered$gene_id)
-    # Find duplicated gene_ids
-    dup_genes <- names(gene_freq[gene_freq > 1])
-    
-    # For each duplicated gene_id, add a suffix
-    for (gene in dup_genes) {
-      # Find all rows with this gene_id
-      idx <- which(gene_count_filtered$gene_id == gene)
-      # Add suffix to these gene_ids
-      gene_count_filtered$gene_id[idx] <- paste0(gene, "_", seq_along(idx))
-    }
-  }
-  
   # Convert to matrix format for DESeq2
   gene_count_matrix <- gene_count_filtered %>%
     column_to_rownames("gene_id") %>%
@@ -74,7 +26,7 @@ timepoint_comparison <- function() {
   )
   
   # Filter low count genes
-  keep <- rowSums(counts(dds) >= 10) >= min(3, ncol(dds))
+ keep<-rowSums(counts(dds) >= 10) >= min(3, ncol(dds))
   dds <- dds[keep,]
   
   # Run DESeq2 analysis
@@ -130,10 +82,7 @@ if (!is.null(tp_results)) {
       padj = top_genes$padj
     ))
     
-    #
-    # Part 2: Enrichment Analysis
-    #
-    
+  
     # Function to perform enrichment analysis
     run_enrichment <- function(res, padj_cutoff = 0.05, log2FC_cutoff = 0) {
       # Get significant genes
