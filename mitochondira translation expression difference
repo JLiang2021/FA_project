@@ -1,627 +1,135 @@
-# Load required packages
-library(DESeq2)
-library(org.Dm.eg.db)
-library(AnnotationDbi)
-library(pheatmap)
-library(RColorBrewer)
-library(ggplot2)
-library(tidyr)
-library(dplyr)
 
-# Step 1: Define translation-related gene sets
-define_translation_gene_sets <- function() {
-  # Define gene sets for different translation processes
-  translation_gene_sets <- list(
-    # Cytoplasmic ribosomal proteins
-    "Cytoplasmic_Ribosome_Large" = "^Rpl",
-    "Cytoplasmic_Ribosome_Small" = "^Rps",
-    
-    # Mitochondrial ribosomal proteins
-    "Mitochondrial_Ribosome_Large" = "^mRpL",
-    "Mitochondrial_Ribosome_Small" = "^mRpS",
-    
-    # Translation initiation factors (cytoplasmic)
-    "Translation_Initiation" = "^eIF",
-    
-    # Translation elongation factors (cytoplasmic)
-    "Translation_Elongation" = "^eEF",
-    
-    # Mitochondrial translation factors
-    "Mitochondrial_Translation" = c("^mt-", "^mtd", "^mtt", "^mtIF"),
-    
-    # Aminoacyl-tRNA synthetases
-    "tRNA_Synthetases" = "RS$|^Aars"
-  )
-  
-  return(translation_gene_sets)
-}
 
-# Step 2: Map FlyBase IDs to gene symbols for better interpretation
-map_flybase_to_symbols <- function(gene_ids) {
-  # Map FlyBase IDs to gene symbols
-  symbols <- mapIds(
-    org.Dm.eg.db,
-    keys = gene_ids,
-    column = "SYMBOL",
-    keytype = "FLYBASE",
-    multiVals = "first"
-  )
-  
-  return(symbols)
-}
-
-# Step 3: Identify translation-related genes in the data
-identify_translation_genes <- function(dds, gene_sets) {
-  # Get all gene IDs in the dataset
-  all_genes <- rownames(dds)
-  
-  # Map to gene symbols
-  gene_symbols <- map_flybase_to_symbols(all_genes)
-  names(gene_symbols) <- all_genes
-  
-  # Initialize results list
-  gene_category_mapping <- list()
-  
-  # For each gene category, find matching genes
-  for (category_name in names(gene_sets)) {
-    patterns <- gene_sets[[category_name]]
-    matching_genes <- c()
-    
-    for (gene_id in all_genes) {
-      gene_symbol <- gene_symbols[gene_id]
-      
-      # Skip NA symbols
-      if (is.na(gene_symbol)) next
-      
-      # Check if the gene matches any pattern
-      is_match <- any(sapply(patterns, function(pattern) {
-        grepl(pattern, gene_symbol, ignore.case = TRUE)
-      }))
-      
-      if (is_match) {
-        matching_genes <- c(matching_genes, gene_id)
-      }
-    }
-    
-    # Store the matching genes
-    gene_category_mapping[[category_name]] <- matching_genes
-  }
-  
-  # Add an "All_Translation" category combining all genes
-  all_translation_genes <- unique(unlist(gene_category_mapping))
-  gene_category_mapping[["All_Translation"]] <- all_translation_genes
-  
-  # Create a data frame mapping genes to categories
-  gene_to_category <- data.frame(
-    gene_id = character(),
-    gene_symbol = character(),
-    category = character(),
-    stringsAsFactors = FALSE
-  )
-  
-  for (category in names(gene_category_mapping)) {
-    genes <- gene_category_mapping[[category]]
-    if (length(genes) > 0) {
-      category_df <- data.frame(
-        gene_id = genes,
-        gene_symbol = gene_symbols[genes],
-        category = category,
-        stringsAsFactors = FALSE
-      )
-      gene_to_category <- rbind(gene_to_category, category_df)
-    }
-  }
-  
-  return(list(
-    gene_sets = gene_category_mapping,
-    gene_mapping = gene_to_category,
-    all_gene_symbols = gene_symbols
-  ))
-}
-
-# Step 4: Analyze expression patterns of translation-related genes
-analyze_translation_expression <- function(dds, gene_info, condition_variable) {
-  # Get normalized counts using varianceStabilizingTransformation instead of vst
-  # This works better with small gene sets
-  vsd <- varianceStabilizingTransformation(dds, blind = FALSE)
-  normalized_counts <- assay(vsd)
-  
-  # Prepare metadata
-  sample_info <- colData(dds)
-  
-  # Create a list to store results
-  results_list <- list()
-  heatmaps <- list()
-  
-  # Function to create expression boxplots for each category
-  create_expression_boxplots <- function(gene_set, category_name) {
-    # Skip if no genes in this category
-    if (length(gene_set) == 0) return(NULL)
-    
-    # Get normalized counts for these genes
-    category_counts <- normalized_counts[gene_set, ]
-    
-    # Convert to long format
-    counts_df <- as.data.frame(t(category_counts))
-    counts_df$sample <- rownames(counts_df)
-    
-    # Add condition information
-    counts_df <- merge(counts_df, as.data.frame(sample_info), by.x = "sample", by.y = "row.names")
-    
-    # Convert to long format for plotting
-    long_df <- tidyr::pivot_longer(
-      counts_df,
-      cols = setdiff(colnames(counts_df), c("sample", colnames(as.data.frame(sample_info)))),
-      names_to = "gene_id",
-      values_to = "expression"
-    )
-    
-    # Add gene symbols
-    long_df$gene_symbol <- gene_info$all_gene_symbols[long_df$gene_id]
-    
-    # Create the boxplot
-    p <- ggplot(long_df, aes_string(x = condition_variable, y = "expression", fill = condition_variable)) +
-      geom_boxplot(alpha = 0.7) +
-      geom_jitter(width = 0.2, alpha = 0.3, size = 0.8) +
-      labs(
-        title = paste("Expression of", category_name, "Genes"),
-        y = "Normalized Expression",
-        x = condition_variable
-      ) +
-      theme_bw() +
-      theme(axis.text.x = element_text(angle = 45, hjust = 1))
-    
-    # Return the plot and data
-    return(list(plot = p, data = long_df))
-  }
-  
-  # Create boxplots for each category
-  for (category in names(gene_info$gene_sets)) {
-    genes <- gene_info$gene_sets[[category]]
-    if (length(genes) > 0) {
-      results_list[[category]] <- create_expression_boxplots(genes, category)
-    }
-  }
-  
-  # Create heatmaps to compare expression patterns
-  create_heatmap <- function(gene_set, category_name) {
-    # Skip if no genes in this category
-    if (length(gene_set) < 3) return(NULL)
-    
-    # Get normalized counts for these genes
-    category_counts <- normalized_counts[gene_set, ]
-    
-    # Replace gene IDs with gene symbols for better readability
-    rownames(category_counts) <- gene_info$all_gene_symbols[rownames(category_counts)]
-    
-    # Create sample annotation
-    sample_anno <- as.data.frame(sample_info)
-    
-    # Create heatmap
-    heatmap <- pheatmap(
-      category_counts,
-      scale = "row",
-      annotation_col = sample_anno,
-      cluster_rows = TRUE,
-      cluster_cols = TRUE,
-      show_rownames = TRUE,
-      show_colnames = FALSE,
-      main = paste("Expression of", category_name, "Genes")
-    )
-    
-    return(heatmap)
-  }
-  
-  # Create heatmaps for major categories
-  major_categories <- c("Cytoplasmic_Ribosome_Large", "Cytoplasmic_Ribosome_Small", 
-                        "Mitochondrial_Ribosome_Large", "Mitochondrial_Ribosome_Small")
-  
-  for (category in major_categories) {
-    genes <- gene_info$gene_sets[[category]]
-    if (length(genes) >= 3) {
-      heatmaps[[category]] <- create_heatmap(genes, category)
-    }
-  }
-  
-  # Combine cytoplasmic vs mitochondrial for direct comparison
-  cyto_genes <- unique(c(
-    gene_info$gene_sets[["Cytoplasmic_Ribosome_Large"]],
-    gene_info$gene_sets[["Cytoplasmic_Ribosome_Small"]]
-  ))
-  
-  mito_genes <- unique(c(
-    gene_info$gene_sets[["Mitochondrial_Ribosome_Large"]],
-    gene_info$gene_sets[["Mitochondrial_Ribosome_Small"]]
-  ))
-  
-  # Create combined heatmap if we have enough genes
-  if (length(cyto_genes) >= 3 && length(mito_genes) >= 3) {
-    combined_genes <- c(cyto_genes, mito_genes)
-    
-    # Get counts
-    combined_counts <- normalized_counts[combined_genes, ]
-    
-    # Replace gene IDs with symbols
-    rownames(combined_counts) <- gene_info$all_gene_symbols[rownames(combined_counts)]
-    
-    # Create gene annotation
-    gene_anno <- data.frame(
-      Type = rep("Cytoplasmic", length(combined_genes)),
-      row.names = combined_genes
-    )
-    gene_anno[mito_genes, "Type"] <- "Mitochondrial"
-    
-    # Create sample annotation
-    sample_anno <- as.data.frame(sample_info)
-    
-    # Create annotation colors
-    anno_colors <- list(
-      Type = c(Cytoplasmic = "skyblue", Mitochondrial = "salmon")
-    )
-    
-    # Add colors for the condition variable
-    condition_levels <- unique(sample_info[[condition_variable]])
-    if (length(condition_levels) <= 8) {  # Only create colors for a reasonable number of levels
-      condition_colors <- RColorBrewer::brewer.pal(max(3, length(condition_levels)), "Set1")
-      names(condition_colors) <- condition_levels
-      anno_colors[[condition_variable]] <- condition_colors
-    }
-    
-    # Create heatmap
-    combined_heatmap <- pheatmap(
-      combined_counts,
-      scale = "row",
-      annotation_row = gene_anno,
-      annotation_col = sample_anno,
-      annotation_colors = anno_colors,
-      cluster_rows = TRUE,
-      cluster_cols = TRUE,
-      show_rownames = TRUE,
-      show_colnames = FALSE,
-      main = "Comparison of Cytoplasmic vs Mitochondrial Ribosomal Gene Expression"
-    )
-    
-    heatmaps[["Cytoplasmic_vs_Mitochondrial"]] <- combined_heatmap
-  }
-  
-  # Return all results
-  return(list(
-    boxplots = results_list,
-    heatmaps = heatmaps
-  ))
-}
-
-# Step 5: Statistical testing of differences between global and mitochondrial translation
-statistical_testing <- function(dds, gene_info, condition_variable) {
-  # Get normalized counts
-  vsd <- varianceStabilizingTransformation(dds, blind = FALSE)
-  normalized_counts <- assay(vsd)
-  
-  # Get condition information
-  condition_values <- colData(dds)[[condition_variable]]
-  
-  # Group genes by major categories
-  cyto_ribo_genes <- unique(c(
-    gene_info$gene_sets[["Cytoplasmic_Ribosome_Large"]],
-    gene_info$gene_sets[["Cytoplasmic_Ribosome_Small"]]
-  ))
-  
-  mito_ribo_genes <- unique(c(
-    gene_info$gene_sets[["Mitochondrial_Ribosome_Large"]],
-    gene_info$gene_sets[["Mitochondrial_Ribosome_Small"]]
-  ))
-  
-  # Function to calculate average expression by condition
-  calc_avg_expression <- function(gene_set, condition) {
-    # Skip if no genes
-    if (length(gene_set) == 0) return(NULL)
-    
-    # Get samples with this condition
-    samples <- rownames(colData(dds))[condition_values == condition]
-    
-    # Calculate average expression across these samples for each gene
-    if (length(samples) > 0) {
-      gene_means <- rowMeans(normalized_counts[gene_set, samples, drop = FALSE])
-      return(gene_means)
-    } else {
-      return(NULL)
-    }
-  }
-  
-  # Calculate statistical differences
-  stat_results <- list()
-  
-  # Get unique condition values
-  unique_conditions <- unique(condition_values)
-  
-  # For each pair of conditions
-  if (length(unique_conditions) >= 2) {
-    for (i in 1:(length(unique_conditions) - 1)) {
-      for (j in (i+1):length(unique_conditions)) {
-        cond1 <- unique_conditions[i]
-        cond2 <- unique_conditions[j]
-        
-        # Calculate average expression
-        cyto_cond1 <- calc_avg_expression(cyto_ribo_genes, cond1)
-        cyto_cond2 <- calc_avg_expression(cyto_ribo_genes, cond2)
-        mito_cond1 <- calc_avg_expression(mito_ribo_genes, cond1)
-        mito_cond2 <- calc_avg_expression(mito_ribo_genes, cond2)
-        
-        # Calculate log2 fold changes
-        if (!is.null(cyto_cond1) && !is.null(cyto_cond2) && !is.null(mito_cond1) && !is.null(mito_cond2)) {
-          # Log2 fold changes
-          cyto_log2fc <- log2(cyto_cond1 / cyto_cond2)
-          mito_log2fc <- log2(mito_cond1 / mito_cond2)
-          
-          # Remove Inf and NaN
-          cyto_log2fc <- cyto_log2fc[is.finite(cyto_log2fc)]
-          mito_log2fc <- mito_log2fc[is.finite(mito_log2fc)]
-          
-          # Perform t-test to see if the fold changes differ between cyto and mito
-          if (length(cyto_log2fc) > 0 && length(mito_log2fc) > 0) {
-            t_test_result <- t.test(cyto_log2fc, mito_log2fc)
-            
-            # Calculate mean fold changes
-            mean_cyto_fc <- mean(cyto_log2fc)
-            mean_mito_fc <- mean(mito_log2fc)
-            
-            # Store results
-            comparison_name <- paste(cond1, "vs", cond2)
-            stat_results[[comparison_name]] <- list(
-              cytoplasmic_mean_log2fc = mean_cyto_fc,
-              mitochondrial_mean_log2fc = mean_mito_fc,
-              difference = mean_cyto_fc - mean_mito_fc,
-              p_value = t_test_result$p.value,
-              t_statistic = t_test_result$statistic,
-              cyto_genes = length(cyto_log2fc),
-              mito_genes = length(mito_log2fc)
-            )
-          }
-        }
-      }
-    }
-  }
-  
-  return(stat_results)
-}
-
-# Step 6: Analyze translation-related genes from DESeq2 results
-analyze_translation_genes <- function(res_matched) {
-  # Define lists of gene patterns to search for in Drosophila
-  gene_categories <- list(
-    # Cytoplasmic ribosomal proteins
-    "Cytoplasmic Ribosome (Large)" = "^Rpl",
-    "Cytoplasmic Ribosome (Small)" = "^Rps",
-    
-    # Mitochondrial ribosomal proteins
-    "Mitochondrial Ribosome (Large)" = "^mRpL",
-    "Mitochondrial Ribosome (Small)" = "^mRpS",
-    
-    # Translation initiation factors
-    "Translation Initiation" = "^eIF",
-    
-    # Translation elongation factors
-    "Translation Elongation" = "^eEF",
-    
-    # Mitochondrial translation factors
-    "Mitochondrial Translation" = c("^mt-", "^mtd", "^mt$"),
-    
-    # Aminoacyl-tRNA synthetases
-    "tRNA Synthetases" = "RS$|^Aars"
-  )
-  
-  # Get all genes from the results
-  all_genes <- rownames(res_matched)
-  
-  # Get gene symbols for all genes
-  gene_symbols <- mapIds(org.Dm.eg.db,
-                         keys = all_genes,
-                         column = "SYMBOL",
-                         keytype = "FLYBASE",
-                         multiVals = "first")
-  
-  # Create a data frame to store all matching genes
-  translation_genes <- data.frame()
-  
-  # Search for genes in each category
-  for (category_name in names(gene_categories)) {
-    patterns <- gene_categories[[category_name]]
-    
-    # Find matching genes
-    matching_genes <- c()
-    
-    for (gene_id in all_genes) {
-      gene_symbol <- gene_symbols[gene_id]
-      
-      # Skip NA symbols
-      if (is.na(gene_symbol)) next
-      
-      # Check if the gene matches any pattern
-      is_match <- any(sapply(patterns, function(pattern) {
-        grepl(pattern, gene_symbol, ignore.case = TRUE)
-      }))
-      
-      if (is_match) {
-        matching_genes <- c(matching_genes, gene_id)
-      }
-    }
-    
-    # Get expression data for matching genes
-    if (length(matching_genes) > 0) {
-      gene_data <- data.frame(
-        FlyBase_ID = matching_genes,
-        Gene_Symbol = gene_symbols[matching_genes],
-        Category = category_name,
-        log2FoldChange = res_matched[matching_genes, "log2FoldChange"],
-        padj = res_matched[matching_genes, "padj"],
-        stringsAsFactors = FALSE
-      )
-      
-      # Add significance flag
-      gene_data$Significant <- gene_data$padj < 0.05
-      
-      # Add to combined results
-      translation_genes <- rbind(translation_genes, gene_data)
-    }
-  }
-  
-  # Sort by category and fold change
-  translation_genes <- translation_genes[order(translation_genes$Category, -translation_genes$log2FoldChange), ]
-  
-  return(translation_genes)
-}
-
-# Step 7: Run the complete analysis workflow
-run_mitochondrial_cytoplasmic_analysis <- function(dds, res_matched, condition_variable) {
-  # 1. Analyze translation-related genes from DESeq2 results
-  translation_gene_list <- analyze_translation_genes(res_matched)
-  
-  # 2. Define gene sets for translation machinery
-  gene_sets <- define_translation_gene_sets()
-  
-  # 3. Identify translation-related genes in the data
-  gene_info <- identify_translation_genes(dds, gene_sets)
-  
-  # 4. Analyze expression patterns
-  expression_results <- analyze_translation_expression(dds, gene_info, condition_variable)
-  
-  # 5. Perform statistical testing
-  stat_results <- statistical_testing(dds, gene_info, condition_variable)
-  
-  # 6. Create a summary of the analysis results
-  # Summary of significant genes by category
-  category_summary <- table(translation_gene_list$Category[translation_gene_list$Significant])
-  
-  # Summary of up/down regulation by category
-  regulation_summary <- list()
-  for (category in unique(translation_gene_list$Category)) {
-    # Get genes in this category
-    category_genes <- subset(translation_gene_list, Category == category & Significant)
-    
-    if (nrow(category_genes) == 0) {
-      regulation_summary[[category]] <- "No significant genes in this category"
-    } else {
-      # Count up/down regulated
-      up_count <- sum(category_genes$log2FoldChange > 0)
-      down_count <- sum(category_genes$log2FoldChange < 0)
-      
-      # Get top differentially expressed genes
-      top_genes <- category_genes[order(abs(category_genes$log2FoldChange), decreasing=TRUE), ][1:min(5, nrow(category_genes)), ]
-      
-      # Format results
-      top_genes_text <- sapply(1:nrow(top_genes), function(i) {
-        direction <- ifelse(top_genes$log2FoldChange[i] > 0, "up", "down")
-        paste0(
-          top_genes$Gene_Symbol[i], ": ", 
-          round(top_genes$log2FoldChange[i], 2), " (", direction, "regulated, ", 
-          "padj=", format(top_genes$padj[i], scientific=TRUE, digits=2), ")"
-        )
-      })
-      
-      regulation_summary[[category]] <- list(
-        up_count = up_count,
-        down_count = down_count,
-        top_genes = top_genes_text
-      )
-    }
-  }
-  
-  # 7. Determine if differences are due to organelle number or transcriptional regulation
-  # Count significant genes in each compartment
-  mito_genes <- sum(grepl("Mitochondrial", translation_gene_list$Category) & translation_gene_list$Significant)
-  cyto_genes <- sum(grepl("Cytoplasmic", translation_gene_list$Category) & translation_gene_list$Significant)
-  
-  # Count up/down regulated in each compartment
-  mito_up <- sum(grepl("Mitochondrial", translation_gene_list$Category) & 
-                   translation_gene_list$Significant & translation_gene_list$log2FoldChange > 0)
-  mito_down <- sum(grepl("Mitochondrial", translation_gene_list$Category) & 
-                     translation_gene_list$Significant & translation_gene_list$log2FoldChange < 0)
-  cyto_up <- sum(grepl("Cytoplasmic", translation_gene_list$Category) & 
-                   translation_gene_list$Significant & translation_gene_list$log2FoldChange > 0)
-  cyto_down <- sum(grepl("Cytoplasmic", translation_gene_list$Category) & 
-                     translation_gene_list$Significant & translation_gene_list$log2FoldChange < 0)
-  
-  # Check if there are significant differences between compartments
-  if (mito_genes > 0 && cyto_genes > 0) {
-    # If both compartments have significant genes, compare regulation patterns
-    mito_up_pct <- mito_up / mito_genes * 100
-    cyto_up_pct <- cyto_up / cyto_genes * 100
-    
-    if (abs(mito_up_pct - cyto_up_pct) > 25) {
-      # Different regulation patterns suggest transcriptional regulation
-      conclusion <- "The significant difference in regulation patterns between mitochondrial and cytoplasmic genes suggests compartment-specific transcriptional regulation rather than changes in organelle number."
-    } else {
-      # Similar regulation patterns suggest changes in organelle number
-      conclusion <- "The similar regulation patterns between mitochondrial and cytoplasmic genes suggests global changes possibly related to organelle number or overall cellular activity."
-    }
-  } else if (mito_genes > 0 && cyto_genes == 0) {
-    # Only mitochondrial genes are significant
-    conclusion <- "Only mitochondrial genes show significant expression changes, while cytoplasmic genes remain unchanged. This strongly suggests mitochondria-specific transcriptional regulation rather than changes in organelle number."
-  } else if (cyto_genes > 0 && mito_genes == 0) {
-    # Only cytoplasmic genes are significant
-    conclusion <- "Only cytoplasmic genes show significant expression changes, while mitochondrial genes remain unchanged. This suggests cytoplasm-specific regulation without affecting mitochondrial function."
-  } else {
-    # No significant genes
-    conclusion <- "No significant expression changes were detected in either mitochondrial or cytoplasmic translation machinery genes."
-  }
-  
-  # 8. Return the complete analysis results
-  return(list(
-    translation_genes = translation_gene_list,
-    expression_results = expression_results,
-    statistical_tests = stat_results,
-    category_summary = category_summary,
-    regulation_summary = regulation_summary,
-    conclusion = conclusion
-  ))
-}
-
-# Example usage:
-# Replace with your actual data
-# 
-# # Run DESeq2 analysis
-# dds <- DESeqDataSetFromMatrix(countData = counts, colData = sample_info, design = ~ condition)
-# dds <- DESeq(dds)
-# res <- results(dds, contrast = c("condition", "test", "control"))
-# res_matched <- res[!is.na(res$padj),]  # Remove genes with NA p-values
-#
-# # Run the analysis
-analysis_results <- run_mitochondrial_cytoplasmic_analysis(
- dds = dds,
- res_matched = res_matched,
-condition_variable = "matched"  # Name of your condition column
+# Define more specific gene lists for mitochondrial and cytoplasmic translation machinery
+mito_ribosomal_genes <- c(
+  grep("^mRpL", res_matched$gene_symbol, value = TRUE)
+  grep("^mRpS", res_matched$gene_symbol, value = TRUE)
 )
-#
-# # Display results
-cat("\n=== Translation-Related Genes and Their Expression Differences ===\n\n")
-#
-# # Print summary of significant genes by category
-cat("Summary of significant differential expression by category:\n")
-print(analysis_results$category_summary)
-#
-# # Print regulation summary
-cat("\nDirection of regulation by category:\n")
-for (category in names(analysis_results$regulation_summary)) {
- cat("\n", category, ":\n", sep="")
-#   
- result <- analysis_results$regulation_summary[[category]]
- if (is.character(result)) {
-cat("  ", result, "\n", sep="")
-  } else {
-   cat("  Upregulated: ", result$up_count, "\n", sep="")
-   cat("  Downregulated: ", result$down_count, "\n", sep="")
-   cat("  Top differentially expressed genes:\n")
-   for (gene in result$top_genes) {
-     cat("    ", gene, "\n", sep="")
-  }
+
+cyto_ribosomal_genes <- c(
+  grep("^Rpl", res_matched$gene_symbol, value = TRUE),
+  grep("^Rps", res_matched$gene_symbol, value = TRUE)
+)
+
+translation_regulators <- c(
+  grep("^eIF", res_matched$gene_symbol, value = TRUE),
+  grep("^eEF", res_matched$gene_symbol, value = TRUE),
+  grep("TLNF-MIF", res_matched$gene_symbol, value = TRUE),
+  grep("eEFSec", res_matched$gene_symbol, value = TRUE),
+  grep("AARS", res_matched$gene_symbol, value = TRUE)
+)
+
+# Get results for these specific gene sets
+mito_ribo_results <- res_matched[rownames(res_matched) %in% rownames(res_matched)[res_matched$gene_symbol %in% mito_ribosomal_genes], ]
+cyto_ribo_results <- res_matched[rownames(res_matched) %in% rownames(res_matched)[res_matched$gene_symbol %in% cyto_ribosomal_genes], ]
+trans_reg_results <- res_matched[rownames(res_matched) %in% rownames(res_matched)[res_matched$gene_symbol %in% translation_regulators], ]
+
+# Create detailed results tables with relaxed significance threshold (p < 0.05)
+create_summary_table <- function(result_set, name) {
+  # Count significant genes with relaxed threshold
+  sig_up <- sum(result_set$pvalue < 0.05 & result_set$log2FoldChange > 0, na.rm = TRUE)
+  sig_down <- sum(result_set$pvalue < 0.05 & result_set$log2FoldChange < 0, na.rm = TRUE)
+  
+  # Create summary table
+  summary_df <- data.frame(
+    Category = name,
+    Total_Genes = nrow(result_set),
+    Significant_Total = sum(result_set$pvalue < 0.05, na.rm = TRUE),
+    Significant_Up = sig_up,
+    Significant_Down = sig_down,
+    Percent_Significant = round(100 * sum(result_set$pvalue < 0.05, na.rm = TRUE) / nrow(result_set), 1)
+  )
+  
+  # List of significant genes
+  sig_genes <- result_set[result_set$pvalue < 0.05, ]
+  sig_genes <- sig_genes[order(sig_genes$pvalue), ]
+  
+  # Return both summary and significant genes
+  return(list(summary = summary_df, significant_genes = sig_genes))
+}
+
+# Create summaries
+mito_ribo_summary <- create_summary_table(mito_ribo_results, "Mitochondrial Ribosomal Proteins")
+cyto_ribo_summary <- create_summary_table(cyto_ribo_results, "Cytoplasmic Ribosomal Proteins")
+trans_reg_summary <- create_summary_table(trans_reg_results, "Translation Regulators")
+
+# Combine summaries for comparison
+biogenesis_summary <- rbind(
+  mito_ribo_summary$summary,
+  cyto_ribo_summary$summary,
+  trans_reg_summary$summary
+)
+
+# Print overall summary
+cat("\n=== Comparison of Mitochondrial and Cytoplasmic Biogenesis Genes ===\n")
+print(biogenesis_summary)
+
+# Check if there's a difference in proportion of up/downregulated genes
+# This helps determine if there's compartment-specific regulation
+cat("\n=== Direction of Expression Changes ===\n")
+for (name in c("Mitochondrial Ribosomal Proteins", "Cytoplasmic Ribosomal Proteins", "Translation Regulators")) {
+  summary_row <- biogenesis_summary[biogenesis_summary$Category == name, ]
+  
+  if (summary_row$Significant_Total > 0) {
+    up_percent <- round(100 * summary_row$Significant_Up / summary_row$Significant_Total, 1)
+    down_percent <- round(100 * summary_row$Significant_Down / summary_row$Significant_Total, 1)
+    
+    cat(name, ":\n")
+    cat("  Upregulated:", summary_row$Significant_Up, "(", up_percent, "%)\n", sep="")
+    cat("  Downregulated:", summary_row$Significant_Down, "(", down_percent, "%)\n", sep="")
   }
 }
-#
-# # Display conclusion
-# cat("\nConclusion regarding mitochondrial vs cytoplasmic regulation:\n")
-# cat(analysis_results$conclusion, "\n")
-#
-# # Display heatmaps
-if (!is.null(analysis_results$expression_results$heatmaps[["Cytoplasmic_vs_Mitochondrial"]])) {
- print(analysis_results$expression_results$heatmaps[["Cytoplasmic_vs_Mitochondrial"]])
+
+# Print top significant genes from each category
+print_top_genes <- function(gene_set, name, n=5) {
+  if (nrow(gene_set$significant_genes) > 0) {
+    cat("\nTop significant", name, "genes (relaxed p < 0.05 threshold):\n")
+    top_genes <- head(gene_set$significant_genes, n)
+    
+    result_df <- data.frame(
+      Gene = top_genes$gene_symbol,
+      log2FC = round(top_genes$log2FoldChange, 3),
+      pvalue = format(top_genes$pvalue, scientific = TRUE, digits = 3),
+      padj = format(top_genes$padj, scientific = TRUE, digits = 3)
+    )
+    
+    print(result_df)
+  } else {
+    cat("\nNo significant", name, "genes found.\n")
+  }
+}
+
+print_top_genes(mito_ribo_summary, "mitochondrial ribosomal")
+print_top_genes(cyto_ribo_summary, "cytoplasmic ribosomal")
+print_top_genes(trans_reg_summary, "translation regulator")
+
+# Calculate overall enrichment for mitochondrial vs cytoplasmic biogenesis
+# This tests whether one compartment is more affected than the other
+if (mito_ribo_summary$summary$Total_Genes > 0 && cyto_ribo_summary$summary$Total_Genes > 0) {
+  # Create contingency table
+  contingency <- matrix(c(
+    mito_ribo_summary$summary$Significant_Total,
+    mito_ribo_summary$summary$Total_Genes - mito_ribo_summary$summary$Significant_Total,
+    cyto_ribo_summary$summary$Significant_Total,
+    cyto_ribo_summary$summary$Total_Genes - cyto_ribo_summary$summary$Significant_Total
+  ), nrow = 2)
+  
+  # Perform Fisher's exact test
+  fisher_result <- fisher.test(contingency)
+  
+  cat("\n=== Statistical comparison of mitochondrial vs cytoplasmic biogenesis ===\n")
+  cat("Fisher's exact test for differential regulation:\n")
+  cat("p-value:", fisher_result$p.value, "\n")
+  cat("Odds ratio:", fisher_result$estimate, "\n")
+  
+  # Interpret result
+  if (fisher_result$p.value < 0.05) {
+    if (fisher_result$estimate > 1) {
+      cat("Interpretation: Mitochondrial biogenesis genes are significantly more affected than cytoplasmic ones.\n")
+    } else {
+      cat("Interpretation: Cytoplasmic biogenesis genes are significantly more affected than mitochondrial ones.\n")
+    }
+  } else {
+    cat("Interpretation: No significant difference in regulation between mitochondrial and cytoplasmic biogenesis genes.\n")
+  }
 }
