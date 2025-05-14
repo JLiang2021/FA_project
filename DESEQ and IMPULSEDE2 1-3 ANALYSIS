@@ -69,8 +69,7 @@ summary(res_matched)
 sig_genes_time <- subset(res_time, padj < 0.05)
 sig_genes_matched <- subset(res_matched, padj < 0.05)
 
-# Print results with gene names instead of just FlyBase IDs
-cat("Top significant genes with time as continuous variable:\n")
+
 sig_time_with_names <- data.frame(
   FlyBase_ID = rownames(sig_genes_time),
   Gene_Name = gene_name_mapping[rownames(sig_genes_time)],
@@ -80,7 +79,6 @@ sig_time_with_names <- data.frame(
 )
 head(sig_time_with_names[order(sig_time_with_names$padj),], 10)
 
-cat("\nTop significant genes for matched vs unmatched:\n")
 sig_matched_with_names <- data.frame(
   FlyBase_ID = rownames(sig_genes_matched),
   Gene_Name = gene_name_mapping[rownames(sig_genes_matched)],
